@@ -1,18 +1,18 @@
 /*
  * Abstract base class for USB-attached devices.
- * 
+ *
  * Copyright (c) 2013 Micah Elizabeth Scott
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
  * the Software without restriction, including without limitation the rights to
  * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
  * the Software, and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
  * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -26,8 +26,10 @@
 #include "rapidjson/document.h"
 #include "opc.h"
 #include <string>
-#include <libusb.h>
 
+#ifndef __ANDROID__
+#include <libusb.h>
+#endif // __ANDROID__
 
 /*
  * We find it important to know whether the libusbx backend ends up copying or mapping
@@ -41,14 +43,14 @@
  * isn't already copying it.
  */
 
-#ifdef OS_LINUX
- // No need to copy the buffer
+#if defined(OS_LINUX) || defined(__ANDROID__)
+// No need to copy the buffer
 #elif OS_WINDOWS
-  #define NEED_COPY_USB_TRANSFER_BUFFER 1
+#define NEED_COPY_USB_TRANSFER_BUFFER 1
 #elif OS_DARWIN
-  #define NEED_COPY_USB_TRANSFER_BUFFER 1
+#define NEED_COPY_USB_TRANSFER_BUFFER 1
 #else
-  #error Dont know whether we need to copy the USB transfer buffer
+#error Dont know whether we need to copy the USB transfer buffer
 #endif
 
 
@@ -59,7 +61,12 @@ public:
     typedef rapidjson::Document Document;
     typedef rapidjson::MemoryPoolAllocator<> Allocator;
 
+#ifdef __ANDROID__
+    USBDevice(const char *type, bool verbose, int fileDescriptor, const char * serial);
+#else
     USBDevice(libusb_device *device, const char *type, bool verbose);
+#endif //__ANDROID__
+
     virtual ~USBDevice();
 
     // Must be opened before any other methods are called.
@@ -91,17 +98,34 @@ public:
 
     virtual std::string getName() = 0;
 
+#ifndef __ANDROID__
     libusb_device *getDevice() { return mDevice; };
+#else
+    const int getFileDescriptor() { return mFD;}
+#endif //__ANDROID__
+
     const char *getSerial() { return mSerialString; }
     const char *getTypeString() { return mTypeString; }
 
 protected:
+
+#ifdef __ANDROID__
+    void android_bulk_transfer(void *buffer, int length);
+#endif //__ANDROID__
+
+#ifndef __ANDROID__
     libusb_device *mDevice;
     libusb_device_handle *mHandle;
+#endif // __ANDROID__
+
     struct timeval mTimestamp;
     const char *mTypeString;
     const char *mSerialString;
     bool mVerbose;
+
+#ifdef  __ANDROID__
+    const int mFD;
+#endif //__ANDROID__
 
     // Utilities
     const Value *findConfigMap(const Value &config);

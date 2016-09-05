@@ -1,18 +1,18 @@
 /*
  * Fadecandy driver for the Enttec DMX USB Pro.
- * 
+ *
  * Copyright (c) 2013 Micah Elizabeth Scott
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
  * the Software without restriction, including without limitation the rights to
  * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
  * the Software, and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
  * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -28,23 +28,30 @@
 #include <sstream>
 #include <iostream>
 
-
+#ifndef __ANDROID__
 EnttecDMXDevice::Transfer::Transfer(EnttecDMXDevice *device, void *buffer, int length)
     : transfer(libusb_alloc_transfer(0)), finished(false)
 {
     libusb_fill_bulk_transfer(transfer, device->mHandle,
-        OUT_ENDPOINT, (uint8_t*) buffer, length, EnttecDMXDevice::completeTransfer, this, 2000);
+                              OUT_ENDPOINT, (uint8_t*) buffer, length, EnttecDMXDevice::completeTransfer, this, 2000);
 }
 
 EnttecDMXDevice::Transfer::~Transfer()
 {
     libusb_free_transfer(transfer);
 }
+#endif //__ANDROID__
 
-EnttecDMXDevice::EnttecDMXDevice(libusb_device *device, bool verbose)
+#ifdef __ANDROID__
+EnttecDMXDevice::EnttecDMXDevice(bool verbose, const char * serialNumber, int fileDescriptor)
+    : USBDevice("enttec", verbose, fileDescriptor, serialNumber),
+      mConfigMap(0)
+#else
+EnttecDMXDevice::EnttecDMXDevice(libusb_device * device, bool verbose)
     : USBDevice(device, "enttec", verbose),
       mFoundEnttecStrings(false),
       mConfigMap(0)
+#endif //__ANDROID__
 {
     mSerialBuffer[0] = '\0';
     mSerialString = mSerialBuffer;
@@ -59,6 +66,7 @@ EnttecDMXDevice::EnttecDMXDevice(libusb_device *device, bool verbose)
 
 EnttecDMXDevice::~EnttecDMXDevice()
 {
+#ifndef __ANDROID__
     /*
      * If we have pending transfers, cancel them.
      * The Transfer objects themselves will be freed once libusb completes them.
@@ -68,15 +76,22 @@ EnttecDMXDevice::~EnttecDMXDevice()
         Transfer *fct = *i;
         libusb_cancel_transfer(fct->transfer);
     }
+#endif //__ANDROID__
 }
 
+#ifndef __ANDROID__
 bool EnttecDMXDevice::probe(libusb_device *device)
+#else
+bool EnttecDMXDevice::probe(int vendorId, int productId)
+#endif //__ANDROID__
 {
+
+#ifndef __ANDROID__
     /*
-     * Prior to opening the device, all we can do is look for an FT245 device.
-     * We'll take a closer look in probeAfterOpening(), once we can see the
-     * string descriptors.
-     */
+       * Prior to opening the device, all we can do is look for an FT245 device.
+       * We'll take a closer look in probeAfterOpening(), once we can see the
+       * string descriptors.
+       */
 
     libusb_device_descriptor dd;
 
@@ -87,10 +102,16 @@ bool EnttecDMXDevice::probe(libusb_device *device)
 
     // FTDI FT245
     return dd.idVendor == 0x0403 && dd.idProduct == 0x6001;
+
+#else
+    return vendorId == 0x0403 && productId == 0x6001;
+#endif //__ANDROID__
 }
 
 int EnttecDMXDevice::open()
 {
+
+#ifndef __ANDROID__
     libusb_device_descriptor dd;
     int r = libusb_get_device_descriptor(mDevice, &dd);
     if (r < 0) {
@@ -139,11 +160,12 @@ int EnttecDMXDevice::open()
         }
 
         r = libusb_get_string_descriptor_ascii(mHandle, dd.iSerialNumber,
-            (uint8_t*)mSerialBuffer, sizeof mSerialBuffer);
+                                               (uint8_t*)mSerialBuffer, sizeof mSerialBuffer);
         if (r < 0) {
             return r;
         }
     }
+#endif //__ANDROID__
 
     return 0;
 }
@@ -179,12 +201,20 @@ void EnttecDMXDevice::setChannel(unsigned n, uint8_t value)
     }
 }
 
+
+#ifndef __ANDROID__
 void EnttecDMXDevice::submitTransfer(Transfer *fct)
+#else
+bool EnttecDMXDevice::submitTransfer(EnttecDMXDevice *device, void *buffer, int length)
+#endif
 {
+
+#ifndef __ANDROID__
+
     /*
-     * Submit a new USB transfer. The Transfer object is guaranteed to be freed eventually.
-     * On error, it's freed right away.
-     */
+       * Submit a new USB transfer. The Transfer object is guaranteed to be freed eventually.
+       * On error, it's freed right away.
+       */
 
     int r = libusb_submit_transfer(fct->transfer);
 
@@ -196,16 +226,26 @@ void EnttecDMXDevice::submitTransfer(Transfer *fct)
     } else {
         mPending.insert(fct);
     }
+
+#else
+
+  android_bulk_transfer(buffer,length);
+  return true;
+
+#endif //__ANDROID__
 }
 
+#ifndef __ANDROID__
 void EnttecDMXDevice::completeTransfer(struct libusb_transfer *transfer)
 {
     EnttecDMXDevice::Transfer *fct = static_cast<EnttecDMXDevice::Transfer*>(transfer->user_data);
     fct->finished = true;
 }
+#endif //__ANDROID__
 
 void EnttecDMXDevice::flush()
 {
+#ifndef __ANDROID__
     // Erase any finished transfers
 
     std::set<Transfer*>::iterator current = mPending.begin();
@@ -221,6 +261,7 @@ void EnttecDMXDevice::flush()
 
         current = next;
     }
+#endif //__ANDROID__
 }
 
 void EnttecDMXDevice::writeDMXPacket()
@@ -233,7 +274,11 @@ void EnttecDMXDevice::writeDMXPacket()
      *      faster than the Enttec device can keep up!
      */
 
+#ifndef __ANDROID__
     submitTransfer(new Transfer(this, &mChannelBuffer, mChannelBuffer.length + 5));
+#else
+    submitTransfer(this, &mChannelBuffer, mChannelBuffer.length + 5);
+#endif //__ANDROID__
 }
 
 void EnttecDMXDevice::writeMessage(const OPC::Message &msg)
@@ -244,14 +289,14 @@ void EnttecDMXDevice::writeMessage(const OPC::Message &msg)
 
     switch (msg.command) {
 
-        case OPC::SetPixelColors:
-            opcSetPixelColors(msg);
-            writeDMXPacket();
-            return;
+    case OPC::SetPixelColors:
+        opcSetPixelColors(msg);
+        writeDMXPacket();
+        return;
 
-        case OPC::SystemExclusive:
-            // No relevant SysEx for this device
-            return;
+    case OPC::SystemExclusive:
+        // No relevant SysEx for this device
+        return;
     }
 
     if (mVerbose) {

@@ -4,19 +4,19 @@
  * This is a TCP server which accepts either Open Pixel Control, HTTP, or WebSockets
  * connections on a single port. We use a fork of libwebsockets which supports serving
  * external non-HTTP protocols via a low-level receive callback.
- * 
+ *
  * Copyright (c) 2013 Micah Elizabeth Scott
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
  * the Software without restriction, including without limitation the rights to
  * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
  * the Software, and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
  * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -33,15 +33,33 @@
 #include <iostream>
 #include <algorithm>
 
+#ifdef __ANDROID__
+#include "android/log.h"
+#include "jni.h"
+#define APP_NAME "fadecandy-server"
+#include <sys/socket.h>
+#include "fcserver.h"
+#endif // __ANDROID__
 
+#ifndef __ANDROID__
 TcpNetServer::TcpNetServer(OPC::callback_t opcCallback, jsonCallback_t jsonCallback,
-    void *context, bool verbose)
+                           void *context, bool verbose)
     : mOpcCallback(opcCallback), mJsonCallback(jsonCallback),
       mUserContext(context), mThread(0), mVerbose(verbose)
+#else
+TcpNetServer::TcpNetServer(OPC::callback_t opcCallback, jsonCallback_t jsonCallback,
+                           void *context, bool verbose)
+    : mOpcCallback(opcCallback), mJsonCallback(jsonCallback),
+      mUserContext(context), mThread(0), mVerbose(verbose), loop_control(true)
+#endif //__ANDROID__
 {}
 
 bool TcpNetServer::start(const char *host, int port)
 {
+#ifdef __ANDROID__
+    loop_control = true;
+#endif // __ANDROID
+
     const int llNormal = LLL_ERR | LLL_WARN;
     const int llVerbose = llNormal | LLL_NOTICE;
 
@@ -71,7 +89,11 @@ bool TcpNetServer::start(const char *host, int port)
 
     struct libwebsocket_context *context = libwebsocket_create_context(&info);
     if (!context) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "libwebsocket init failed\n");
+#else
         lwsl_err("libwebsocket init failed\n");
+#endif //__ANDROID__
         return false;
     }
 
@@ -80,7 +102,11 @@ bool TcpNetServer::start(const char *host, int port)
         lws_set_log_level(llVerbose, NULL);
     }
 
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "Server listening on %s:%d\n", host ? host : "*", port);
+#else
     lwsl_notice("Server listening on %s:%d\n", host ? host : "*", port);
+#endif //__ANDROID
 
     // Note that we pass ownership of all libwebsockets state to this new thread.
     // We shouldn't access it on the other threads afterwards.
@@ -104,15 +130,80 @@ void TcpNetServer::threadFunc(void *arg)
      * that much. During normal operation we'll be receiving lots of data over the
      * network anyway.
      */
+
+#ifndef __ANDROID__
+
     while (libwebsocket_service(context, 100) >= 0) {
         self->flushBroadcastList();
     }
 
     libwebsocket_context_destroy(context);
+
+#else
+
+    while ((libwebsocket_service(context, 100) >= 0) && self->loop_control) {
+        self->flushBroadcastList();
+    }
+    close_service_fd(context);
+    libwebsocket_context_destroy(context);
+
+    self->dispatch_close_server();
+
+    if (FCServer::jvm != 0) {
+        FCServer::jvm->DetachCurrentThread();
+    }
+    else {
+        __android_log_print(ANDROID_LOG_ERROR, "snoop decoder", "jvm not defined\n");
+    }
+
+    __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "Server close");
+
+#endif // __ANDROID__
 }
 
+
+#ifdef __ANDROID__
+
+void TcpNetServer::dispatch_close_server() {
+
+    if (FCServer::jvm != 0) {
+
+        int getEnvStat = FCServer::jvm->GetEnv((void **)&FCServer::env, JNI_VERSION_1_6);
+
+        if (getEnvStat == JNI_EDETACHED) {
+
+            if (FCServer::jvm->AttachCurrentThread(&FCServer::env, NULL) != 0) {
+
+                __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "failed to attach\n");
+            }
+        } else if (getEnvStat == JNI_EVERSION) {
+
+            __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "jni: version not supported\n");
+        }
+
+        jmethodID methodId = FCServer::env->GetMethodID(FCServer::globalServiceClass, "onServerClose", "()V");
+
+        if (!methodId) {
+            __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "method onServerClose not found\n");
+        }
+        else {
+            FCServer::env->CallVoidMethod(FCServer::localServiceClass, methodId);
+        }
+        FCServer::jvm->DetachCurrentThread();
+    }
+    else {
+        __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "jvm not defined\n");
+    }
+}
+
+void TcpNetServer::close() {
+    loop_control = false;
+}
+
+#endif //__ANDROID__
+
 int TcpNetServer::lwsCallback(libwebsocket_context *context, libwebsocket *wsi,
-    enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len)
+                              enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len)
 {
     /*
      * Protocol callback for libwebsockets.
@@ -128,50 +219,50 @@ int TcpNetServer::lwsCallback(libwebsocket_context *context, libwebsocket *wsi,
     Client *client = (Client*) user;
 
     switch (reason) {
-        case LWS_CALLBACK_CLOSED:
-        case LWS_CALLBACK_CLOSED_HTTP:
-        case LWS_CALLBACK_DEL_POLL_FD:
-            if (client && client->opcBuffer) {
-                free(client->opcBuffer);
-                client->opcBuffer = NULL;
-            }
-            self->mClients.erase(wsi);
-            break;
+    case LWS_CALLBACK_CLOSED:
+    case LWS_CALLBACK_CLOSED_HTTP:
+    case LWS_CALLBACK_DEL_POLL_FD:
+        if (client && client->opcBuffer) {
+            free(client->opcBuffer);
+            client->opcBuffer = NULL;
+        }
+        self->mClients.erase(wsi);
+        break;
 
-        case LWS_CALLBACK_ESTABLISHED:
-            self->mClients.insert(wsi);
-            break;
+    case LWS_CALLBACK_ESTABLISHED:
+        self->mClients.insert(wsi);
+        break;
 
-        case LWS_CALLBACK_HTTP:
-            return self->httpBegin(context, wsi, *client, (const char*) in);
+    case LWS_CALLBACK_HTTP:
+        return self->httpBegin(context, wsi, *client, (const char*) in);
 
-        case LWS_CALLBACK_HTTP_FILE_COMPLETION:
-            // Only serve one file per connect
-            return -1;
+    case LWS_CALLBACK_HTTP_FILE_COMPLETION:
+        // Only serve one file per connect
+        return -1;
 
-        case LWS_CALLBACK_HTTP_WRITEABLE:
-            return self->httpWrite(context, wsi, *client);
+    case LWS_CALLBACK_HTTP_WRITEABLE:
+        return self->httpWrite(context, wsi, *client);
 
-        case LWS_CALLBACK_SOCKET_READ:
-            // Low-level socket read. We may trap these for OPC protocol handling.
-            if (client->state != CLIENT_STATE_HTTP) {
-                return self->opcRead(context, wsi, *client, (uint8_t*)in, len);
-            }
-            break;
+    case LWS_CALLBACK_SOCKET_READ:
+        // Low-level socket read. We may trap these for OPC protocol handling.
+        if (client->state != CLIENT_STATE_HTTP) {
+            return self->opcRead(context, wsi, *client, (uint8_t*)in, len);
+        }
+        break;
 
-        case LWS_CALLBACK_RECEIVE:
-            // WebSockets data received
-            return self->wsRead(context, wsi, *client, (uint8_t*)in, len);
+    case LWS_CALLBACK_RECEIVE:
+        // WebSockets data received
+        return self->wsRead(context, wsi, *client, (uint8_t*)in, len);
 
-        default:
-            break;
+    default:
+        break;
     }
 
     return 0;
 }
 
 int TcpNetServer::opcRead(libwebsocket_context *context, libwebsocket *wsi,
-    Client &client, uint8_t *in, size_t len)
+                          Client &client, uint8_t *in, size_t len)
 {
     /*
      * Open Pixel Control packet dispatch, and protocol detection.
@@ -185,11 +276,11 @@ int TcpNetServer::opcRead(libwebsocket_context *context, libwebsocket *wsi,
 
     OPCBuffer *opcb;
     uint8_t *buffer;
-    unsigned bufferLength;    
+    unsigned bufferLength;
 
     // Allocate the buffer we use for OPC reassembly and protocol-detect.
     if (client.opcBuffer == NULL) {
-        opcb = (OPCBuffer*) malloc(sizeof *client.opcBuffer);
+        opcb = (OPCBuffer*) malloc(sizeof * client.opcBuffer);
         if (opcb == NULL) {
             lwsl_err("ERROR: Out of memory allocating OPC reassembly buffer.\n");
             return -1;
@@ -304,7 +395,7 @@ bool TcpNetServer::httpPathEqual(const char *a, const char *b)
 }
 
 int TcpNetServer::httpBegin(libwebsocket_context *context, libwebsocket *wsi,
-    Client &client, const char *path)
+                            Client &client, const char *path)
 {
     /*
      * We have a new plain HTTP request. Match it against our document list, and send
@@ -327,19 +418,19 @@ int TcpNetServer::httpBegin(libwebsocket_context *context, libwebsocket *wsi,
 
     char buffer[1024];
     int size = snprintf(buffer, sizeof buffer,
-        "HTTP/1.1 %d %s\r\n"
-        "Server: %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %u\r\n"
-        "Content-Encoding: deflate\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        doc->path ? 200 : 404,
-        doc->path ? "OK" : "Not Found",
-        kFCServerVersion,
-        doc->contentType,
-        doc->contentLength
-    );
+                        "HTTP/1.1 %d %s\r\n"
+                        "Server: %s\r\n"
+                        "Content-Type: %s\r\n"
+                        "Content-Length: %u\r\n"
+                        "Content-Encoding: deflate\r\n"
+                        "Connection: close\r\n"
+                        "\r\n",
+                        doc->path ? 200 : 404,
+                        doc->path ? "OK" : "Not Found",
+                        kFCServerVersion,
+                        doc->contentType,
+                        doc->contentLength
+                       );
 
     if (libwebsocket_write(wsi, (unsigned char*) buffer, size, LWS_WRITE_HTTP) < 0) {
         return -1;
@@ -393,9 +484,9 @@ int TcpNetServer::wsRead(libwebsocket_context *context, libwebsocket *wsi, Clien
             lwsl_notice("NOTICE: Received OPC packet over WebSockets with nonzero reserved (length) fields.\n");
         }
 
-        if (len > sizeof *msg) {
+        if (len > sizeof * msg) {
             lwsl_notice("NOTICE: Received oversized OPC packet over WebSockets. Truncating.\n");
-            len = sizeof *msg;
+            len = sizeof * msg;
         }
 
         msg->setLength(len - OPC::HEADER_BYTES);
@@ -410,7 +501,7 @@ int TcpNetServer::wsRead(libwebsocket_context *context, libwebsocket *wsi, Clien
 
     if (message.HasParseError()) {
         lwsl_notice("NOTICE: Parse error in received JSON, character %d: %s\n",
-            int(message.GetErrorOffset()), message.GetParseError());
+                    int(message.GetErrorOffset()), message.GetParseError());
         return 0;
     }
 

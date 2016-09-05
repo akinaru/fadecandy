@@ -1,18 +1,18 @@
 /*
  * Open Pixel Control server for Fadecandy
- * 
+ *
  * Copyright (c) 2013 Micah Elizabeth Scott
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
  * the Software without restriction, including without limitation the rights to
  * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
  * the Software, and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
  * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -29,7 +29,19 @@
 #include <ctype.h>
 #include <iostream>
 
+#ifdef __ANDROID__
 
+#include "android/log.h"
+#define APP_NAME "fadecandy-server"
+#include "jni.h"
+
+jclass  FCServer::localServiceClass;
+jclass  FCServer::globalServiceClass;
+JavaVM* FCServer::jvm = 0;
+JNIEnv* FCServer::env = 0;
+#endif //__ANDROID__
+
+#ifndef __ANDROID__
 FCServer::FCServer(rapidjson::Document &config)
     : mConfig(config),
       mListen(config["listen"]),
@@ -40,7 +52,15 @@ FCServer::FCServer(rapidjson::Document &config)
       mTcpNetServer(cbOpcMessage, cbJsonMessage, this, mVerbose),
       mUSBHotplugThread(0),
       mUSB(0)
+#else
+FCServer::FCServer()
+    : mPollForDevicesOnce(false),
+      mTcpNetServer(cbOpcMessage, cbJsonMessage, this, mVerbose),
+      mUSBHotplugThread(0)
+#endif //__ANDROID__
 {
+
+#ifndef __ANDROID__
     /*
      * Validate the listen [host, port] list.
      */
@@ -70,30 +90,82 @@ FCServer::FCServer(rapidjson::Document &config)
     if (!mDevices.IsArray()) {
         mError << "The required 'devices' configuration key must be an array.\n";
     }
+
+#endif //__ANDROID__
 }
 
-bool FCServer::start(libusb_context *usb)
+#ifdef __ANDROID__
+
+int FCServer::init(const char* config)
 {
+    __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "config : %s", config);
+
+    mConfig.Parse<0>(config);
+
+    if (mConfig.HasParseError()) {
+
+        __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "Parse error at character %d: %s\n", int(mConfig.GetErrorOffset()), mConfig.GetParseError());
+        return -1;
+    }
+    else {
+
+        this->mColor = mConfig["color"];
+        this->mDevices = mConfig["devices"];
+        this->mVerbose = mConfig["verbose"].IsTrue();
+    }
+
+    /*
+     * Minimal validation on 'devices'
+     */
+    if (!mDevices.IsArray()) {
+        __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "The required 'devices' configuration key must be an array.\n");
+        mError << "The required 'devices' configuration key must be an array.\n";
+    }
+
+    return 0;
+}
+
+#endif //__ANDROID__
+
+
+#ifndef __ANDROID__
+bool FCServer::start(libusb_context *usb)
+#else
+bool FCServer::start()
+#endif //__ANDROID__
+{
+
+#ifndef __ANDROID__
     const Value &host = mListen[0u];
     const Value &port = mListen[1];
+#else
+    const Value &host = mConfig["listen"][0u];
+    const Value &port = mConfig["listen"][1];
+#endif //__ANDROID__
+
     const char *hostStr = host.IsString() ? host.GetString() : NULL;
 
+#ifndef __ANDROID__
     return mTcpNetServer.start(hostStr, port.GetUint()) && startUSB(usb);
+#else
+    return mTcpNetServer.start(hostStr, port.GetUint());
+#endif //__ANDROID__
 }
 
+#ifndef __ANDROID__
 bool FCServer::startUSB(libusb_context *usb)
 {
     mUSB = usb;
 
     // Enumerate all attached devices, and get notified of hotplug events
     libusb_hotplug_register_callback(mUSB,
-        libusb_hotplug_event(LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED |
-                             LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT),
-        LIBUSB_HOTPLUG_ENUMERATE,
-        LIBUSB_HOTPLUG_MATCH_ANY,
-        LIBUSB_HOTPLUG_MATCH_ANY,
-        LIBUSB_HOTPLUG_MATCH_ANY,
-        cbHotplug, this, 0);
+                                     libusb_hotplug_event(LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED |
+                                             LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT),
+                                     LIBUSB_HOTPLUG_ENUMERATE,
+                                     LIBUSB_HOTPLUG_MATCH_ANY,
+                                     LIBUSB_HOTPLUG_MATCH_ANY,
+                                     LIBUSB_HOTPLUG_MATCH_ANY,
+                                     cbHotplug, this, 0);
 
     // On platforms without real USB hotplug, emulate it with a polling thread
     if (!libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
@@ -102,6 +174,7 @@ bool FCServer::startUSB(libusb_context *usb)
 
     return true;
 }
+#endif //__ANDROID
 
 void FCServer::cbOpcMessage(OPC::Message &msg, void *context)
 {
@@ -119,6 +192,8 @@ void FCServer::cbOpcMessage(OPC::Message &msg, void *context)
 
     self->mEventMutex.unlock();
 }
+
+#ifndef __ANDROID__
 
 int FCServer::cbHotplug(libusb_context *ctx, libusb_device *device, libusb_hotplug_event event, void *user_data)
 {
@@ -160,21 +235,21 @@ void FCServer::usbDeviceArrived(libusb_device *device)
         if (mVerbose) {
             switch (r) {
 
-                // Errors that may occur transiently while a device is connecting...
-                case LIBUSB_ERROR_NOT_FOUND:
-                case LIBUSB_ERROR_NOT_SUPPORTED:
-                    #ifdef OS_WINDOWS
-                        std::clog << "Waiting for Windows to install " << dev->getName() << " driver. This may take a moment...\n";
-                    #endif
-                    #ifdef OS_LINUX
-                        // Try again in ~100ms or so.
-                        mPollForDevicesOnce = true;
-                    #endif
-                    break;
+            // Errors that may occur transiently while a device is connecting...
+            case LIBUSB_ERROR_NOT_FOUND:
+            case LIBUSB_ERROR_NOT_SUPPORTED:
+#ifdef OS_WINDOWS
+                std::clog << "Waiting for Windows to install " << dev->getName() << " driver. This may take a moment...\n";
+#endif
+#ifdef OS_LINUX
+                // Try again in ~100ms or so.
+                mPollForDevicesOnce = true;
+#endif
+                break;
 
-                default:
-                    std::clog << "Error opening " << dev->getName() << ": " << libusb_strerror(libusb_error(r)) << "\n";
-                    break;
+            default:
+                std::clog << "Error opening " << dev->getName() << ": " << libusb_strerror(libusb_error(r)) << "\n";
+                break;
             }
         }
         delete dev;
@@ -264,6 +339,93 @@ void FCServer::mainLoop()
     }
 }
 
+#else
+
+
+void FCServer::usbDeviceArrived(int vendorId, int productId, const char * serialNumber, int fileDescriptor)
+{
+    /*
+     * New USB device. Is this a device we recognize?
+     */
+    USBDevice *dev;
+
+    if (FCDevice::probe(vendorId, productId)) {
+        dev = new FCDevice(mVerbose, serialNumber, fileDescriptor);
+    }
+    /*
+    else if (EnttecDMXDevice::probe(vendorId, productId)) {
+        dev = new EnttecDMXDevice(mVerbose, serialNumber, fileDescriptor);
+    }
+    */
+    else {
+        return;
+    }
+
+    if (!dev->probeAfterOpening()) {
+        // We were mistaken, this device isn't actually one we want.
+        delete dev;
+        return;
+    }
+
+    for (unsigned i = 0; i < mDevices.Size(); ++i) {
+
+        __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "device : %d\n", mDevices[i].IsObject());
+
+        if (dev->matchConfiguration(mDevices[i])) {
+            // Found a matching configuration for this device. We're keeping it!
+
+            dev->loadConfiguration(mDevices[i]);
+            dev->writeColorCorrection(mColor);
+            mUSBDevices.push_back(dev);
+
+            if (mVerbose) {
+                __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "USB device attached : %s \n",dev->getSerial());
+                std::clog << "USB device " << dev->getName() << " attached.\n";
+            }
+            jsonConnectedDevicesChanged();
+            return;
+        }
+    }
+
+    if (mVerbose) {
+        __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "USB device has no matching configuration. Not using it. %d\n", mDevices.Size());
+        std::clog << "USB device " << dev->getName() << " has no matching configuration. Not using it.\n";
+    }
+    delete dev;
+}
+
+void FCServer::usbDeviceLeft(int fileDescriptor)
+{
+    /*
+     * Is this a device we recognize? If so, delete it.
+     */
+    for (std::vector<USBDevice*>::iterator i = mUSBDevices.begin(), e = mUSBDevices.end(); i != e; ++i) {
+        USBDevice *dev = *i;
+        if (dev->getFileDescriptor() == fileDescriptor) {
+            __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "USB device detached : %s \n",dev->getSerial());
+            usbDeviceLeft(i);
+            break;
+        }
+    }
+
+}
+
+void FCServer::usbDeviceLeft(std::vector<USBDevice*>::iterator iter)
+{
+    USBDevice *dev = *iter;
+    if (mVerbose) {
+        __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "USB device removed\n");
+        std::clog << "USB device " << dev->getName() << " removed.\n";
+    }
+    mUSBDevices.erase(iter);
+    delete dev;
+    jsonConnectedDevicesChanged();
+}
+
+#endif //__ANDROID__
+
+#ifndef __ANDROID__
+
 bool FCServer::usbHotplugPoll()
 {
     /*
@@ -337,6 +499,8 @@ void FCServer::usbHotplugThreadFunc(void *arg)
     }
 }
 
+#endif //__ANDROID__
+
 void FCServer::cbJsonMessage(libwebsocket *wsi, rapidjson::Document &message, void *context)
 {
     // Received a JSON message from a WebSockets client.
@@ -346,7 +510,11 @@ void FCServer::cbJsonMessage(libwebsocket *wsi, rapidjson::Document &message, vo
 
     const Value &vtype = message["type"];
     if (!vtype.IsString()) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "NOTICE: Received JSON is missing mandatory \"type\" string\n");
+#else
         lwsl_notice("NOTICE: Received JSON is missing mandatory \"type\" string\n");
+#endif //__ANDROID__
         return;
     }
     const char *type = vtype.GetString();
@@ -408,7 +576,7 @@ void FCServer::jsonListConnectedDevices(rapidjson::Document &message)
     Value &list = message["devices"];
 
     for (unsigned i = 0; i != mUSBDevices.size(); i++) {
-        USBDevice *usbDev = mUSBDevices[i];
+        //USBDevice *usbDev = mUSBDevices[i];
         list.PushBack(rapidjson::kObjectType, message.GetAllocator());
         mUSBDevices[i]->describe(list[i], message.GetAllocator());
     }
@@ -435,3 +603,12 @@ void FCServer::jsonConnectedDevicesChanged()
 
     mTcpNetServer.jsonBroadcast(message);
 }
+
+#ifdef __ANDROID__
+
+void FCServer::close() {
+    mUSBDevices.clear();
+    mTcpNetServer.close();
+}
+
+#endif //__ANDROID__

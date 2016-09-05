@@ -1,18 +1,18 @@
 /*
  * Open Pixel Control and HTTP server for Fadecandy
- * 
+ *
  * Copyright (c) 2013 Micah Elizabeth Scott
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
  * the Software without restriction, including without limitation the rights to
  * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
  * the Software, and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
  * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -37,7 +37,7 @@ public:
     typedef void (*jsonCallback_t)(libwebsocket *wsi, rapidjson::Document &message, void *context);
 
     TcpNetServer(OPC::callback_t opcCallback, jsonCallback_t jsonCallback,
-        void *context, bool verbose = false);
+                 void *context, bool verbose = false);
 
     // Start the event loop on a separate thread
     bool start(const char *host, int port);
@@ -47,6 +47,11 @@ public:
 
     // Broadcast JSON to all clients, from any thread.
     void jsonBroadcast(rapidjson::Document &message);
+
+#ifdef __ANDROID__
+    void close();
+    void dispatch_close_server();
+#endif // __ANDROID__
 
 private:
     enum ClientState {
@@ -64,7 +69,7 @@ private:
     };
 
     // Buffer used for protocol-detection and Open Pixel Control. Big enough for two OPC packets.
-    // This buffer is jettisonned 
+    // This buffer is jettisonned
     struct OPCBuffer {
         unsigned bufferLength;
         uint8_t buffer[2 * sizeof(OPC::Message)];
@@ -97,7 +102,7 @@ private:
     // libwebsockets server
     static void threadFunc(void *arg);
     static int lwsCallback(libwebsocket_context *context, libwebsocket *wsi,
-        enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len);
+                           enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len);
 
     // HTTP Server
     int httpBegin(libwebsocket_context *context, libwebsocket *wsi, Client &client, const char *path);
@@ -112,4 +117,8 @@ private:
     void jsonBufferPrepare(jsonBuffer_t &buffer, rapidjson::Value &value);
     int jsonBufferSend(jsonBuffer_t &buffer, libwebsocket *wsi);
     void flushBroadcastList();
+
+#ifdef __ANDROID__
+    bool loop_control;
+#endif //__ANDROID__
 };

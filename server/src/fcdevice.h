@@ -1,18 +1,18 @@
 /*
  * Fadecandy device interface
- * 
+ *
  * Copyright (c) 2013 Micah Elizabeth Scott
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
  * the Software without restriction, including without limitation the rights to
  * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
  * the Software, and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
  * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -26,14 +26,23 @@
 #include "opc.h"
 #include <set>
 
-
 class FCDevice : public USBDevice
 {
 public:
+
+#ifdef __ANDROID__
+    FCDevice(bool verbose, const char * serialNumber, int fileDescriptor);
+#else
     FCDevice(libusb_device *device, bool verbose);
+#endif //__ANDROID__
+
     virtual ~FCDevice();
 
+#ifdef __ANDROID__
+    static bool probe(int vendorId, int productId);
+#else
     static bool probe(libusb_device *device);
+#endif
 
     virtual int open();
     virtual void loadConfiguration(const Value &config);
@@ -53,7 +62,7 @@ public:
     uint8_t *fbPixel(unsigned num) {
         return &mFramebuffer[num / PIXELS_PER_PACKET].data[3 * (num % PIXELS_PER_PACKET)];
     }
- 
+
 private:
     static const unsigned PIXELS_PER_PACKET = 21;
     static const unsigned LUT_ENTRIES_PER_PACKET = 31;
@@ -83,35 +92,52 @@ private:
         FRAME,
     };
 
+#ifndef __ANDROID__
+
     struct Transfer {
         Transfer(FCDevice *device, void *buffer, int length, PacketType type = OTHER);
         ~Transfer();
         libusb_transfer *transfer;
-        #if NEED_COPY_USB_TRANSFER_BUFFER
-          void *bufferCopy;
-        #endif
+#if NEED_COPY_USB_TRANSFER_BUFFER
+        void *bufferCopy;
+#endif
         PacketType type;
         bool finished;
     };
+#endif //__ANDROID__
 
     const Value *mConfigMap;
+
+#ifndef __ANDROID__
     std::set<Transfer*> mPending;
     int mNumFramesPending;
     bool mFrameWaitingForSubmit;
+#endif //__ANDROID__
 
     char mSerialBuffer[256];
     char mVersionString[10];
 
+#ifndef __ANDROID__
     libusb_device_descriptor mDD;
+#endif //__ANDROID__
+
     Packet mFramebuffer[FRAMEBUFFER_PACKETS];
     Packet mColorLUT[LUT_PACKETS];
     Packet mFirmwareConfig;
 
+#ifdef __ANDROID__
+    bool submitTransfer(FCDevice *device, void *buffer, int length);
+#else
     bool submitTransfer(Transfer *fct);
+#endif //__ANDROID__
+
     void writeFirmwareConfiguration();
     void writeFirmwareConfiguration(const Value &json);
     void writeDevicePixels(Document &msg);
+
+#ifndef __ANDROID__
     static LIBUSB_CALL void completeTransfer(libusb_transfer *transfer);
+#endif //__ANDROID__
 
     void opcSetPixelColors(const OPC::Message &msg);
     void opcSysEx(const OPC::Message &msg);
