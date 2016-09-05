@@ -144,8 +144,10 @@ void TcpNetServer::threadFunc(void *arg)
     while ((libwebsocket_service(context, 100) >= 0) && self->loop_control) {
         self->flushBroadcastList();
     }
-    close_service_fd(context);
+
     libwebsocket_context_destroy(context);
+
+    close_service_fd(context);
 
     self->dispatch_close_server();
 
