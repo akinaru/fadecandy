@@ -42,6 +42,9 @@ public:
     // Start the event loop on a separate thread
     bool start(const char *host, int port);
 
+    // Initialize the relay socket
+    bool startRelay(const char *host, int port);
+
     // Reply callback, for use only on the TcpNetServer thread. Call this inside jsonCallback.
     int jsonReply(libwebsocket *wsi, rapidjson::Document &message);
 
@@ -52,6 +55,8 @@ public:
     void close();
     void dispatch_close_server();
 #endif // __ANDROID__
+    // Sends an OPC message to clients connected to the relay socket
+    void relayMessage(OPC::Message &msg);
 
 private:
     enum ClientState {
@@ -93,6 +98,10 @@ private:
     bool mVerbose;
     std::set<libwebsocket*> mClients;
 
+    void *mRelayContext;
+    tthread::thread *mRelayThread;
+    std::set<libwebsocket*> mRelayClients;
+
     typedef rapidjson::GenericStringBuffer<rapidjson::UTF8<> > jsonBuffer_t;
     std::vector<jsonBuffer_t*> mBroadcastList;
     tthread::mutex mBroadcastMutex;
@@ -101,8 +110,11 @@ private:
 
     // libwebsockets server
     static void threadFunc(void *arg);
+
     static int lwsCallback(libwebsocket_context *context, libwebsocket *wsi,
-                           enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len);
+        enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len);
+    static int lwsRelayCallback(libwebsocket_context *context, libwebsocket *wsi,
+        enum libwebsocket_callback_reasons reason, void *user, void *in, size_t len);
 
     // HTTP Server
     int httpBegin(libwebsocket_context *context, libwebsocket *wsi, Client &client, const char *path);

@@ -26,6 +26,7 @@
 #include "opc.h"
 #include "tcpnetserver.h"
 #include "usbdevice.h"
+#include "spidevice.h"
 #include <sstream>
 #include <vector>
 
@@ -78,6 +79,7 @@ private:
 #ifndef __ANDROID__
     const Document& mConfig;
     const Value& mListen;
+    const Value& mRelay;
     const Value& mColor;
     const Value& mDevices;
 #else
@@ -99,6 +101,8 @@ private:
     struct libusb_context *mUSB;
 #endif //__ANDROID__
 
+	std::vector<SPIDevice*> mSPIDevices;
+
     static void cbOpcMessage(OPC::Message &msg, void *context);
     static void cbJsonMessage(libwebsocket *wsi, rapidjson::Document &message, void *context);
 
@@ -116,6 +120,9 @@ private:
     bool usbHotplugPoll();
     static void usbHotplugThreadFunc(void *arg);
 #endif //__ANDROID__
+
+	bool startSPI();
+	void openAPA102SPIDevice(uint32_t port, int numLights);
 
     // JSON event broadcasters
     void jsonConnectedDevicesChanged();

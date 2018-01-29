@@ -19,6 +19,7 @@ The configuration file is a JSON object. By default, it looks like this:
 ```
 {
     "listen": ["127.0.0.1", 7890],
+    "relay": NULL,
     "verbose": true,
 
     "color": {
@@ -40,6 +41,7 @@ The configuration file is a JSON object. By default, it looks like this:
 Name     | Summary
 -------- | -------------------------------------------------------
 listen   | What address and port should the server listen on?
+relay    | What address and port should the server relay messages to?
 verbose  | Does the server log anything except errors to the console?
 color    | Default global color correction settings
 devices  | List of configured devices
@@ -52,6 +54,13 @@ By default, fcserver listens on port 7890 on the local (loopback) interface. Thi
 The "listen" configuration key must be a JSON array of the form [**host**, **port**], where **port** is a number and **host** is either a string or *null*. If the host is *null*, fcserver listens on all network interfaces and it's reachable from other computers
 
 *Warning:* Do not run fcserver on an untrusted network. It has no built-in security provisions, so anyone on your network will have control of fcserver. Additionally, bugs in fcserver may compromise the security of your computer.
+
+Relay
+-----
+
+The "relay" configuration key is using the same format as the "listen" configuration key and allows clients to connect on a separate socket to receive a copy of the OPC messages the fcserver is handling.
+
+Relaying is disabled by default.
 
 Color
 -----
@@ -102,6 +111,8 @@ Supported mapping objects for Fadecandy devices:
     * The "Color channels" must be a 3-letter string, where each letter corresponds to one of the WS2811 outputs.
     * Each letter can be "r", "g", or "b" to choose the red, green, or blue channel respectively, or "l" to use the average luminosity.
 
+If the pixel count is negative, the output pixels are mapped in reverse order starting at the first output pixel index and decrementing the index for each successive pixel up to the absolute value of the pixel count.
+
 Other settings for Fadecandy devices:
 
 Name         | Values               | Default | Description
@@ -110,7 +121,7 @@ led          | true / false / null  | null    | Is the LED on, off, or under aut
 dither       | true / false         | true    | Is dithering enabled?
 interpolate  | true / false         | true    | Is inter-frame interpolation enabled?
 
-The following example config file supports two Fadecandy devices with distinct serial numbers. They both receive data from OPC channel #0. The first 512 pixels map to the first Fadecandy device. The next 64 pixels map to the entire first strand of the second Fadecandy device, and the next 32 pixels map to the beginning of the third strand with the color channels in Blue, Green, Red order.
+The following example config file supports two Fadecandy devices with distinct serial numbers. They both receive data from OPC channel #0. The first 512 pixels map to the first Fadecandy device. The next 64 pixels map to the entire first strand of the second Fadecandy device, the next 32 pixels map to the beginning of the third strand with the color channels in Blue, Green, Red order, and the next 32 pixels map to the end of the third strand in reverse order.
 
     {
         "listen": ["127.0.0.1", 7890],
@@ -136,6 +147,7 @@ The following example config file supports two Fadecandy devices with distinct s
                 "map": [
                     [ 0, 512, 0, 64 ],
                     [ 0, 576, 128, 32, "bgr" ]
+                    [ 0, 608, 191, -32 ]
                 ]
             }
         ]
@@ -186,3 +198,30 @@ Enttec DMX devices use a different format for their mapping objects:
     * DMX channels are numbered from 1 to 512.
 * [ *Value*, *DMX Channel* ]
     * Map a constant value to a DMX channel; good for configuration modes
+
+Using Open Pixel Control with the APA102/APA102C/SK9822 
+---------------------------------
+
+The Fadecandy server now has experimental support for the APA102 family of LEDs.
+
+APA102 devices can be configured in the same way as a Fadecandy device. For example:
+
+    {
+        "listen": ["127.0.0.1", 7890],
+        "verbose": true,
+
+        "devices": [
+            {
+                    "type": "apa102spi",
+                    "port": 0,
+                    "numLights": 144,
+                    "map": [ [ 0, 0, 0, 144 ] ]
+                ]
+            }
+        ]
+    }
+
+Supported mapping objects for APA102 devices:
+
+* [ *OPC Channel*, *First OPC Pixel*, *First output pixel*, *Pixel count* ]
+    * Map a contiguous range of pixels from the specified OPC channel to the current device
