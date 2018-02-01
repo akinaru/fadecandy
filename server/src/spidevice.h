@@ -27,8 +27,9 @@
 #include "rapidjson/document.h"
 #include "opc.h"
 #include <string>
+#ifndef __ANDROID__
 #include <libusb.h> // Also brings in gettimeofday() in a portable way
-
+#endif //__ANDROID__
 class SPIDevice
 {
 public:
