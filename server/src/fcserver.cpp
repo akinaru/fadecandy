@@ -134,6 +134,34 @@ int FCServer::init(const char* config)
     if (mConfig.HasParseError()) {
 
         __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "Parse error at character %d: %s\n", int(mConfig.GetErrorOffset()), mConfig.GetParseError());
+
+        if (FCServer::jvm != 0) {
+
+            int getEnvStat = FCServer::jvm->GetEnv((void **)&FCServer::env, JNI_VERSION_1_6);
+
+            if (getEnvStat == JNI_EDETACHED) {
+
+              if (FCServer::jvm->AttachCurrentThread(&FCServer::env, NULL) != 0) {
+
+                __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "failed to attach\n");
+              }
+            } else if (getEnvStat == JNI_EVERSION) {
+
+              __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "jni: version not supported\n");
+            }
+          }
+          else {
+            __android_log_print(ANDROID_LOG_ERROR, APP_NAME, "jvm not defined\n");
+          }
+
+          jint errorOffset = mConfig.GetErrorOffset();
+          jstring parseError = FCServer::env->NewStringUTF(mConfig.GetParseError());
+
+          jmethodID methodId = FCServer::env->GetMethodID(FCServer::globalServiceClass, "onParseError", "(ILjava/lang/String;)V");
+          FCServer::env->CallVoidMethod(FCServer::localServiceClass, methodId, errorOffset, parseError);
+
+          FCServer::env->DeleteLocalRef(parseError);
+
         return -1;
     }
     else {
@@ -493,7 +521,6 @@ void FCServer::usbDeviceArrived(int vendorId, int productId, const char * serial
             return;
         }
     }
-
     if (mVerbose) {
         __android_log_print(ANDROID_LOG_VERBOSE, APP_NAME, "USB device has no matching configuration. Not using it. %d\n", mDevices.Size());
         std::clog << "USB device " << dev->getName() << " has no matching configuration. Not using it.\n";
@@ -612,7 +639,6 @@ void FCServer::cbJsonMessage(libwebsocket *wsi, rapidjson::Document &message, vo
 {
     // Received a JSON message from a WebSockets client.
     // Replies are formed by modifying the original message.
-
     FCServer *self = (FCServer*) context;
 
     const Value &vtype = message["type"];
